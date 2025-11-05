@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>GitHub Actions CI/CD Snippet — Copy / Download</title>
+<style>
+  :root{
+    --bg:#0b1220; --card:#0f1724; --muted:#94a3b8; --accent:#7c3aed; --glass: rgba(255,255,255,0.02);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:Inter,system-ui,Arial; background:linear-gradient(180deg,#020617 0%, #071426 60%); color:#e6eef8;
+    min-height:100vh; display:flex; align-items:center; justify-content:center; padding:28px;
+  }
+  .wrap { width:100%; max-width:960px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; gap:12px; }
+  h1 { margin:0; font-size:20px; }
+  p.lead { margin:4px 0 0 0; color:var(--muted); font-size:13px; }
+
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border-radius:12px; padding:16px; border:1px solid rgba(255,255,255,0.03);
+    box-shadow: 0 6px 30px rgba(2,6,23,0.6);
+  }
+  .grid { display:grid; grid-template-columns: 1fr; gap:12px; }
+  .card h2 { margin:0 0 8px 0; font-size:16px; color:#fff }
+  .meta { color:var(--muted); font-size:13px; margin-bottom:8px; }
+
+  pre.code {
+    background: #071127; color:#e6eef8; padding:12px; border-radius:8px; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px;
+    margin:0; border:1px solid rgba(255,255,255,0.02);
+  }
+
+  .toolbar { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center; }
+  button {
+    background:linear-gradient(90deg,var(--accent), #5b21b6); color:white; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:700;
+  }
+  button.alt { background:transparent; border:1px solid rgba(255,255,255,0.04); color:var(--muted); font-weight:600; }
+  .status { color:var(--muted); font-size:13px; margin-left:8px; }
+  footer { margin-top:14px; color:var(--muted); font-size:13px; }
+
+  @media (max-width:900px){
+    .wrap { padding:12px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>GitHub Actions — CI/CD Workflow</h1>
+        <p class="lead">Click <strong>Copy</strong> to copy the YAML to clipboard or <strong>Download</strong> to save the workflow file locally.</p>
+      </div>
+      <div class="meta">Place the downloaded file at <code>.github/workflows/ci-cd.yml</code></div>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <h2>CI/CD Workflow (ci-cd.yml)</h2>
+        <div class="meta">This workflow runs tests, builds the React app, uploads the build artifact, and on pushes to <code>main</code> builds & pushes a Docker image and optionally deploys.</div>
+
+        <pre class="code" id="workflow">
+name: CI / CD Pipeline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  pages: write
+  id-token: write
+
+env:
+  NODE_VERSION: 18
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  ci:
+    name: CI — lint / test / build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: |
+          if npm run -s lint ; then
+            echo "lint ok"
+          else
+            echo "lint failed"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: |
+          if npm test -- --watchAll=false ; then
+            echo "tests passed"
+          else
+            echo "tests failed"
+            exit 1
+          fi
+
+      - name: Build (production)
+        run: npm run build
+
+      - name: Upload built artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: build
+
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          file: ./Dockerfile
+
+  deploy_pages:
+    name: Deploy → GitHub Pages
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./build
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_PAGES_PAT || github.token }}
+          publish_dir: ./build
+          publish_branch: gh-pages
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
+
+  deploy_ssh:
+    name: Deploy → SSH (optional)
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && secrets.SSH_PRIVATE_KEY
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./build
+
+      - name: Copy build to remote server
+        uses: appleboy/ssh-action@v0.1.8
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "./build/"
+          target: ${{ secrets.REMOTE_DEPLOY_PATH }}
+          rm: true
+
+      - name: Remote restart (example)
+        uses: appleboy/ssh-action@v0.1.8
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sudo systemctl restart nginx || true
+            # or docker-compose -f /path/to/docker-compose.yml pull --quiet && docker-compose -f /path/to/docker-compose.yml up -d --remove-orphans
+        </pre>
+
+        <div class="toolbar">
+          <button onclick="copyCode('workflow')">Copy YAML</button>
+          <button class="alt" onclick="downloadFile('.github-workflow-ci-cd.yml', document.getElementById('workflow').textContent)">Download</button>
+          <span class="status" id="workflow-status"></span>
+        </div>
+
+      </section>
+
+      <section class="card">
+        <h2>How to use</h2>
+        <div class="meta">Quick steps to enable the pipeline in your repo.</div>
+        <pre class="code" id="instructions">
+1) Save the YAML to: .github/workflows/ci-cd.yml
+2) Add required secrets in GitHub repo Settings -> Secrets:
+   - DOCKERHUB_USERNAME
+   - DOCKERHUB_TOKEN
+   - (optional) GITHUB_PAGES_PAT
+   - (optional) SSH_HOST, SSH_USERNAME, SSH_PRIVATE_KEY, REMOTE_DEPLOY_PATH
+3) Ensure package.json contains scripts:
+   - \"lint\" (optional), \"test\", \"build\"
+4) Push to GitHub. CI runs on push & PR; Docker build/push triggers for pushes to main.
+        </pre>
+
+        <div class="toolbar">
+          <button onclick="copyCode('instructions')">Copy Instructions</button>
+          <button class="alt" onclick="downloadFile('CI-CD-INSTRUCTIONS.txt', document.getElementById('instructions').textContent)">Download</button>
+        </div>
+      </section>
+
+    </div>
+
+    <footer>
+      <p>Tip: adapt the workflow to your needs — replace Docker Hub steps with ECR/GCR/ACR actions, or remove deploy jobs if not needed.</p>
+    </footer>
+  </div>
+
+<script>
+  function copyCode(id) {
+    const el = document.getElementById(id);
+    const txt = el.textContent;
+    navigator.clipboard.writeText(txt).then(() => {
+      showTempStatus(id + '-status', 'Copied ✔', 2000);
+    }, () => {
+      showTempStatus(id + '-status', 'Copy failed', 3000);
+    });
+  }
+
+  function downloadFile(filename, content) {
+    const blob = new Blob([content], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showTempStatus('workflow-status', 'Downloaded ✔', 2200);
+  }
+
+  function showTempStatus(id, msg, ms) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const prev = el.textContent;
+    el.textContent = msg;
+    setTimeout(() => { el.textContent = prev; }, ms);
+  }
+</script>
+</body>
+</html>
